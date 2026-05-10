@@ -1,8 +1,15 @@
 import React from 'react';
 import { Moon, Sun, Bell, Search } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 const Topbar = ({ darkMode, toggleDarkMode }) => {
+  const { user } = useAuth();
+
+  const initials = user?.name
+    ? user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
+    : '?';
+
   return (
     <header className="h-16 bg-white/80 dark:bg-dark-card/80 backdrop-blur-md border-b border-gray-100 dark:border-gray-800 flex items-center justify-between px-6 z-10 transition-colors">
       <div className="flex items-center gap-4 flex-1">
@@ -29,8 +36,13 @@ const Topbar = ({ darkMode, toggleDarkMode }) => {
           {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </button>
 
-        <Link to="/profile" className="h-8 w-8 rounded-full bg-gradient-to-tr from-primary-500 to-primary-300 overflow-hidden cursor-pointer border-2 border-white dark:border-gray-800 shadow-sm block">
-          <img src="https://i.pravatar.cc/150?img=32" alt="User Avatar" className="w-full h-full object-cover" />
+        {/* Real user avatar with initials from DB */}
+        <Link
+          to="/profile"
+          title={user?.name || 'Profile'}
+          className="h-9 w-9 rounded-full bg-gradient-to-tr from-primary-500 to-primary-300 flex items-center justify-center cursor-pointer border-2 border-white dark:border-gray-800 shadow-sm text-white text-sm font-bold"
+        >
+          {initials}
         </Link>
       </div>
     </header>

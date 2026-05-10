@@ -157,6 +157,141 @@ def chat():
             'destinations': []
         }), 500
 
+@app.route('/api/trending', methods=['GET'])
+def trending():
+    """Returns 4 real-time trending travel destinations via Gemini."""
+    try:
+        context = ""
+        try:
+            for url in list(search("top trending travel destinations 2025", num_results=2)):
+                text = extract_content_from_url(url)
+                if text:
+                    context += f"Source ({url}):\n{text}\n\n"
+        except Exception as e:
+            print(f"Search error: {e}")
+
+        if not context.strip():
+            context = "Use your internal knowledge about popular travel destinations in 2025."
+
+        generation_config = {"temperature": 0.8, "response_mime_type": "application/json"}
+        system_prompt = (
+            "You are a travel expert. Return ONLY a valid JSON array of exactly 4 trending travel destinations for 2025. "
+            "Each item must have these exact keys: "
+            "\"name\" (e.g. 'Bali, Indonesia'), \"tagline\" (one short catchy phrase), "
+            "\"rating\" (a float between 4.5 and 5.0), \"price\" (e.g. '$1,200'), "
+            "\"wiki_search\" (best Wikipedia search term for an image, e.g. 'Bali'). "
+            "Output ONLY the JSON array, nothing else."
+        )
+        model = genai.GenerativeModel(model_name="gemini-2.5-flash", generation_config=generation_config, system_instruction=system_prompt)
+        response = model.generate_content(f"Scraped web context:\n{context}")
+        destinations = json.loads(response.text)
+
+        for dest in destinations:
+            dest['image'] = get_wikipedia_image(dest.get('wiki_search', dest.get('name', 'travel')))
+
+        return jsonify(destinations)
+    except Exception as e:
+        print(f"Trending error: {e}")
+        return jsonify([]), 500
+
+
+@app.route('/api/search', methods=['POST'])
+def search_destination():
+    """Real-time destination search: scrapes the web and returns rich info."""
+    data = request.json
+    query = data.get('query', '').strip()
+    if not query:
+        return jsonify({'error': 'Query is required'}), 400
+
+    try:
+        context = ""
+        try:
+            for url in list(search(f"{query} travel guide things to do visit 2025", num_results=2)):
+                text = extract_content_from_url(url)
+                if text:
+                    context += f"Source ({url}):\n{text}\n\n"
+        except Exception as e:
+            print(f"Search error: {e}")
+
+        if not context.strip():
+            context = f"Use your internal knowledge about {query} as a travel destination."
+
+        generation_config = {"temperature": 0.7, "response_mime_type": "application/json"}
+        system_prompt = (
+            "You are a travel expert. Given the web context about a destination, return ONLY valid JSON with these exact keys: "
+            "\"name\" (full destination name), \"country\" (country name), \"description\" (2-3 sentence overview), "
+            "\"highlights\" (array of 4 top things to do/see), "
+            "\"best_time\" (best time to visit, short), \"avg_cost\" (estimated average trip cost), "
+            "\"wiki_search\" (best Wikipedia search term for an image). "
+            "Output ONLY the JSON object, nothing else."
+        )
+        model = genai.GenerativeModel(model_name="gemini-2.5-flash", generation_config=generation_config, system_instruction=system_prompt)
+        response = model.generate_content(f"Destination query: {query}\n\nScraped context:\n{context}")
+        result = json.loads(response.text)
+        result['image'] = get_wikipedia_image(result.get('wiki_search', query))
+        return jsonify(result)
+    except Exception as e:
+        print(f"Search destination error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/city', methods=['POST'])
+def city_guide():
+    """Real-time city guide: activities, restaurants, weather, and highlights."""
+    data = request.json
+    city = data.get('city', '').strip()
+    category = data.get('category', 'All').strip()
+    if not city:
+        return jsonify({'error': 'City is required'}), 400
+
+    try:
+        context = ""
+        queries = [
+            f"{city} top things to do tourist attractions 2025",
+            f"{city} best restaurants food local cuisine 2025"
+        ]
+        for q in queries:
+            try:
+                for url in list(search(q, num_results=1)):
+                    text = extract_content_from_url(url)
+                    if text:
+                        context += f"Source ({url}):\n{text}\n\n"
+            except Exception as e:
+                print(f"Search error: {e}")
+
+        if not context.strip():
+            context = f"Use your knowledge about {city} as a travel destination."
+
+        generation_config = {"temperature": 0.7, "response_mime_type": "application/json"}
+        system_prompt = (
+            "You are a travel expert. Return ONLY valid JSON with these exact keys: "
+            "\"city\" (city name), \"country\" (country), \"description\" (2 sentence city overview), "
+            "\"best_time\" (best season to visit), \"avg_budget\" (daily budget estimate e.g. '$80-$120/day'), "
+            "\"weather\" (current typical weather for this time of year, short), "
+            "\"wiki_search\" (Wikipedia search term for a city image), "
+            "\"activities\" (array of 8 items, each with: \"title\", \"category\" (one of: Tours, Food, Culture, Nature, Nightlife, Shopping), "
+            "\"price\" (number, USD), \"rating\" (float 4.0-5.0), \"reviews\" (integer), \"description\" (1 sentence), \"wiki_search\" (image search term)). "
+            "Output ONLY the JSON object, nothing else."
+        )
+        model = genai.GenerativeModel(model_name="gemini-2.5-flash", generation_config=generation_config, system_instruction=system_prompt)
+        response = model.generate_content(f"City: {city}\nCategory filter: {category}\n\nScraped context:\n{context}")
+        result = json.loads(response.text)
+
+        # Fetch city hero image
+        result['image'] = get_wikipedia_image(result.get('wiki_search', city))
+
+        # Fetch images for each activity
+        for act in result.get('activities', []):
+            act['image'] = get_wikipedia_image(act.get('wiki_search', f"{act.get('title', '')} {city}"))
+
+        return jsonify(result)
+    except Exception as e:
+        print(f"City guide error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     print("Starting production-friendly flow backend on port 5000...")
     app.run(port=5000, debug=True)
+
+

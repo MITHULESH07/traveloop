@@ -1,36 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, GripVertical, MapPin, Clock, DollarSign, Calendar, Trash2, Plane, Camera, Hotel, Train, Coffee } from 'lucide-react';
+import { Plus, GripVertical, MapPin, Clock, DollarSign, Calendar, Trash2, Plane, Camera, Hotel, Train, Coffee, Loader2, Save, CheckCircle, AlertCircle } from 'lucide-react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
-// Dummy JSON Data
-const initialData = {
-  tripName: 'Japan Explorer 2026',
-  totalBudget: 3500,
-  cities: [
-    { id: 'city-1', name: 'Kyoto, Japan', dates: 'Oct 15 - Oct 18', allocatedBudget: 1500 },
-    { id: 'city-2', name: 'Tokyo, Japan', dates: 'Oct 19 - Oct 24', allocatedBudget: 2000 },
-  ],
-  days: {
-    'day-1': { id: 'day-1', title: 'Day 1: Arrival & Rest', cityId: 'city-1', date: 'Oct 15' },
-    'day-2': { id: 'day-2', title: 'Day 2: Temples & Shrines', cityId: 'city-1', date: 'Oct 16' },
-    'day-3': { id: 'day-3', title: 'Day 3: Journey to Tokyo', cityId: 'city-2', date: 'Oct 19' },
-  },
-  activities: {
-    'act-1': { id: 'act-1', content: 'Flight Landing at KIX', time: '10:00 AM', type: 'flight', cost: 0 },
-    'act-2': { id: 'act-2', content: 'Check-in at Ryokan', time: '03:00 PM', type: 'hotel', cost: 250 },
-    'act-3': { id: 'act-3', content: 'Dinner at Pontocho', time: '07:00 PM', type: 'food', cost: 60 },
-    'act-4': { id: 'act-4', content: 'Fushimi Inari Shrine', time: '08:00 AM', type: 'activity', cost: 0 },
-    'act-5': { id: 'act-5', content: 'Kiyomizu-dera', time: '01:00 PM', type: 'activity', cost: 10 },
-    'act-6': { id: 'act-6', content: 'Shinkansen to Tokyo', time: '10:00 AM', type: 'transit', cost: 130 },
-  },
-  columns: {
-    'day-1': { id: 'day-1', activityIds: ['act-1', 'act-2', 'act-3'] },
-    'day-2': { id: 'day-2', activityIds: ['act-4', 'act-5'] },
-    'day-3': { id: 'day-3', activityIds: ['act-6'] },
-  },
-  columnOrder: ['day-1', 'day-2', 'day-3'],
-};
+const NODE_API = 'http://localhost:5001/api';
 
 const getTypeIcon = (type) => {
   switch (type) {
@@ -52,63 +27,183 @@ const getTypeColor = (type) => {
   }
 };
 
+// Build a blank itinerary structure from a DB trip row
+const buildBlankItinerary = (trip) => {
+  const start = new Date(trip.start_date);
+  const end = new Date(trip.end_date);
+  const days = {};
+  const columns = {};
+  const columnOrder = [];
+
+  let current = new Date(start);
+  let dayNum = 1;
+  while (current <= end) {
+    const dateStr = current.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const dayId = `day-${dayNum}`;
+    days[dayId] = { id: dayId, title: `Day ${dayNum}`, date: dateStr };
+    columns[dayId] = { id: dayId, activityIds: [] };
+    columnOrder.push(dayId);
+    current.setDate(current.getDate() + 1);
+    dayNum++;
+  }
+
+  return {
+    tripName: trip.destination,
+    totalBudget: Number(trip.budget) || 0,
+    days,
+    activities: {},
+    columns,
+    columnOrder,
+    image_url: null
+  };
+};
+
+const ACTIVITY_TYPES = ['activity', 'flight', 'hotel', 'transit', 'food'];
+
 const ItineraryBuilder = () => {
-  const [data, setData] = useState(initialData);
-  const [activeCity, setActiveCity] = useState(data.cities[0].id);
+  const { tripId } = useParams();
+  const { token } = useAuth();
+  const navigate = useNavigate();
+
+  const [trip, setTrip] = useState(null);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null); // null | 'saved' | 'error'
+
+  // New activity form state
+  const [showAddForm, setShowAddForm] = useState(null); // dayId or null
+  const [newAct, setNewAct] = useState({ content: '', time: '09:00 AM', type: 'activity', cost: 0 });
+
+  // Load trip from Node DB
+  useEffect(() => {
+    if (!tripId || !token) return;
+    setLoading(true);
+    fetch(`${NODE_API}/trips/${tripId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(r => r.json())
+      .then(t => {
+        if (t.error) { setError(t.error); return; }
+        setTrip(t);
+        // Parse existing itinerary from trip_data, or generate fresh structure
+        try {
+          const parsed = typeof t.trip_data === 'string' ? JSON.parse(t.trip_data) : t.trip_data;
+          if (parsed?.columnOrder?.length > 0) {
+            setData(parsed);
+          } else {
+            setData(buildBlankItinerary(t));
+          }
+        } catch {
+          setData(buildBlankItinerary(t));
+        }
+      })
+      .catch(() => setError('Failed to load trip. Make sure the Node backend is running.'))
+      .finally(() => setLoading(false));
+  }, [tripId, token]);
+
+  const saveItinerary = useCallback(async (updatedData) => {
+    if (!tripId || !token) return;
+    setSaving(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch(`${NODE_API}/trips/${tripId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ trip_data: updatedData })
+      });
+      if (!res.ok) throw new Error('Save failed');
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } catch {
+      setSaveStatus('error');
+    } finally {
+      setSaving(false);
+    }
+  }, [tripId, token]);
 
   const handleDragEnd = (result) => {
     const { destination, source, draggableId } = result;
-
     if (!destination) return;
     if (destination.droppableId === source.droppableId && destination.index === source.index) return;
 
-    const startColumn = data.columns[source.droppableId];
-    const finishColumn = data.columns[destination.droppableId];
+    const startCol = data.columns[source.droppableId];
+    const endCol = data.columns[destination.droppableId];
 
-    if (startColumn === finishColumn) {
-      const newActivityIds = Array.from(startColumn.activityIds);
-      newActivityIds.splice(source.index, 1);
-      newActivityIds.splice(destination.index, 0, draggableId);
-
-      const newColumn = { ...startColumn, activityIds: newActivityIds };
-      setData({ ...data, columns: { ...data.columns, [newColumn.id]: newColumn } });
-      return;
+    let newColumns;
+    if (startCol === endCol) {
+      const ids = Array.from(startCol.activityIds);
+      ids.splice(source.index, 1);
+      ids.splice(destination.index, 0, draggableId);
+      newColumns = { ...data.columns, [startCol.id]: { ...startCol, activityIds: ids } };
+    } else {
+      const startIds = Array.from(startCol.activityIds);
+      startIds.splice(source.index, 1);
+      const endIds = Array.from(endCol.activityIds);
+      endIds.splice(destination.index, 0, draggableId);
+      newColumns = { ...data.columns, [startCol.id]: { ...startCol, activityIds: startIds }, [endCol.id]: { ...endCol, activityIds: endIds } };
     }
 
-    // Moving between lists
-    const startActivityIds = Array.from(startColumn.activityIds);
-    startActivityIds.splice(source.index, 1);
-    const newStart = { ...startColumn, activityIds: startActivityIds };
-
-    const finishActivityIds = Array.from(finishColumn.activityIds);
-    finishActivityIds.splice(destination.index, 0, draggableId);
-    const newFinish = { ...finishColumn, activityIds: finishActivityIds };
-
-    setData({
-      ...data,
-      columns: { ...data.columns, [newStart.id]: newStart, [newFinish.id]: newFinish },
-    });
+    const updated = { ...data, columns: newColumns };
+    setData(updated);
+    saveItinerary(updated);
   };
 
   const removeActivity = (columnId, activityId) => {
-    const column = data.columns[columnId];
-    const newActivityIds = column.activityIds.filter(id => id !== activityId);
-    setData({
+    const col = data.columns[columnId];
+    const newIds = col.activityIds.filter(id => id !== activityId);
+    const newActivities = { ...data.activities };
+    delete newActivities[activityId];
+    const updated = { ...data, columns: { ...data.columns, [columnId]: { ...col, activityIds: newIds } }, activities: newActivities };
+    setData(updated);
+    saveItinerary(updated);
+  };
+
+  const addActivity = (dayId) => {
+    if (!newAct.content.trim()) return;
+    const id = `act-${Date.now()}`;
+    const activity = { id, ...newAct, cost: Number(newAct.cost) || 0 };
+    const col = data.columns[dayId];
+    const updated = {
       ...data,
-      columns: { ...data.columns, [columnId]: { ...column, activityIds: newActivityIds } }
-    });
+      activities: { ...data.activities, [id]: activity },
+      columns: { ...data.columns, [dayId]: { ...col, activityIds: [...col.activityIds, id] } }
+    };
+    setData(updated);
+    saveItinerary(updated);
+    setShowAddForm(null);
+    setNewAct({ content: '', time: '09:00 AM', type: 'activity', cost: 0 });
   };
 
-  const calculateTotalSpent = () => {
-    return Object.values(data.activities).reduce((acc, curr) => acc + curr.cost, 0);
-  };
+  const totalSpent = data ? Object.values(data.activities).reduce((sum, a) => sum + Number(a.cost || 0), 0) : 0;
+  const budgetPct = data?.totalBudget > 0 ? Math.min((totalSpent / data.totalBudget) * 100, 100) : 0;
+  const totalDays = data?.columnOrder?.length || 0;
 
-  const visibleDays = data.columnOrder.filter(dayId => data.days[dayId].cityId === activeCity);
+  const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+
+  if (loading) return (
+    <div className="h-full flex items-center justify-center gap-3 text-gray-500">
+      <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+      <span>Loading itinerary...</span>
+    </div>
+  );
+
+  if (error) return (
+    <div className="h-full flex flex-col items-center justify-center gap-4 text-center p-8">
+      <AlertCircle className="w-12 h-12 text-red-400" />
+      <h2 className="text-xl font-bold text-gray-900 dark:text-white">Trip Not Found</h2>
+      <p className="text-gray-500 text-sm max-w-sm">{error}</p>
+      <button onClick={() => navigate('/profile')} className="btn-primary mt-2">← Back to Profile</button>
+    </div>
+  );
+
+  if (!data) return null;
 
   return (
     <div className="h-full flex flex-col space-y-8 animate-in fade-in duration-700 pb-10">
 
-      {/* Header Section */}
+      {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 bg-gradient-to-r from-gray-900 to-gray-800 rounded-3xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden group">
         <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform duration-700 pointer-events-none">
           <MapPin className="w-32 h-32" />
@@ -119,133 +214,93 @@ const ItineraryBuilder = () => {
           </h1>
           <div className="flex flex-wrap items-center gap-3 text-gray-300 font-medium">
             <span className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg backdrop-blur-md text-sm">
-              <Calendar className="w-4 h-4" /> 10 Days
+              <Calendar className="w-4 h-4" /> {formatDate(trip?.start_date)} → {formatDate(trip?.end_date)}
             </span>
             <span className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg backdrop-blur-md text-sm">
-              <MapPin className="w-4 h-4" /> 2 Cities
+              <MapPin className="w-4 h-4" /> {totalDays} Day{totalDays !== 1 ? 's' : ''}
             </span>
           </div>
         </div>
+
+        {/* Budget Bar */}
         <div className="relative z-10 bg-white/10 backdrop-blur-md border border-white/20 p-5 rounded-2xl flex flex-col items-end shrink-0 min-w-[220px]">
           <span className="text-sm text-gray-300 font-medium flex items-center gap-2 mb-1">
             <DollarSign className="w-4 h-4" /> Budget Status
           </span>
           <div className="text-3xl font-bold whitespace-nowrap">
-            ${calculateTotalSpent()} <span className="text-lg text-gray-400">/ ${data.totalBudget}</span>
+            ${totalSpent.toLocaleString()} <span className="text-lg text-gray-400">/ ${data.totalBudget.toLocaleString()}</span>
           </div>
           <div className="w-full bg-white/10 rounded-full h-1.5 mt-3">
-            <div className="bg-emerald-400 h-1.5 rounded-full transition-all duration-1000" style={{ width: `${(calculateTotalSpent() / data.totalBudget) * 100}%` }}></div>
+            <div className={`h-1.5 rounded-full transition-all duration-1000 ${budgetPct > 90 ? 'bg-red-400' : 'bg-emerald-400'}`} style={{ width: `${budgetPct}%` }}></div>
+          </div>
+          {/* Save status indicator */}
+          <div className="mt-2 text-xs flex items-center gap-1.5">
+            {saving && <><Loader2 className="w-3 h-3 animate-spin" /> Saving...</>}
+            {saveStatus === 'saved' && <><CheckCircle className="w-3 h-3 text-emerald-400" /> <span className="text-emerald-400">Saved</span></>}
+            {saveStatus === 'error' && <><AlertCircle className="w-3 h-3 text-red-400" /> <span className="text-red-400">Save failed</span></>}
           </div>
         </div>
       </div>
 
-      {/* Cities Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex gap-2 p-1 bg-gray-100 dark:bg-dark-card rounded-xl shadow-inner overflow-x-auto">
-          {data.cities.map(city => (
-            <button
-              key={city.id}
-              onClick={() => setActiveCity(city.id)}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-all whitespace-nowrap ${activeCity === city.id
-                  ? 'bg-white dark:bg-gray-800 text-primary-500 shadow-sm'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                }`}
-            >
-              <MapPin className="w-4 h-4" />
-              {city.name}
-            </button>
-          ))}
-          <button className="flex items-center gap-2 px-4 py-2.5 text-gray-500 hover:text-primary-500 transition-colors font-medium">
-            <Plus className="w-4 h-4" /> Add City
-          </button>
-        </div>
-        <button className="btn-primary flex items-center gap-2 shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all">
-          <Plus className="w-4 h-4" /> New Activity
+      {/* Manual Save + info row */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          Drag activities between days. Changes are auto-saved.
+        </p>
+        <button onClick={() => saveItinerary(data)} disabled={saving} className="btn-primary flex items-center gap-2 text-sm px-5 py-2.5 disabled:opacity-70">
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+          Save Itinerary
         </button>
       </div>
 
-      {/* Timeline Layout */}
+      {/* Day Columns */}
       <DragDropContext onDragEnd={handleDragEnd}>
         <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 gap-6 items-start">
           <AnimatePresence mode="popLayout">
-            {visibleDays.map((dayId) => {
+            {data.columnOrder.map((dayId) => {
               const column = data.columns[dayId];
               const day = data.days[dayId];
-              const activities = column.activityIds.map(activityId => data.activities[activityId]);
+              const activities = (column.activityIds || []).map(id => data.activities[id]).filter(Boolean);
 
               return (
-                <motion.div
-                  layout
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ duration: 0.3 }}
-                  key={column.id}
-                  className="bg-white dark:bg-dark-card rounded-3xl border border-gray-100 dark:border-gray-800 shadow-sm flex flex-col h-[600px]"
-                >
+                <motion.div layout initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} transition={{ duration: 0.3 }}
+                  key={dayId} className="bg-white dark:bg-dark-card rounded-3xl border border-gray-100 dark:border-gray-800 shadow-sm flex flex-col">
+
+                  {/* Day Header */}
                   <div className="p-5 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 rounded-t-3xl">
-                    <div className="flex items-center justify-between mb-1">
-                      <h3 className="font-bold text-gray-900 dark:text-white text-lg">{day.title}</h3>
-                    </div>
-                    <p className="text-sm text-primary-500 font-semibold">{day.date}</p>
+                    <h3 className="font-bold text-gray-900 dark:text-white text-lg">{day.title}</h3>
+                    <p className="text-sm text-primary-500 font-semibold mt-0.5">{day.date}</p>
                   </div>
 
-                  <Droppable droppableId={column.id}>
+                  {/* Droppable Activity List */}
+                  <Droppable droppableId={dayId}>
                     {(provided, snapshot) => (
-                      <div
-                        {...provided.droppableProps}
-                        ref={provided.innerRef}
-                        className={`flex-1 overflow-y-auto p-4 space-y-3 transition-colors ${snapshot.isDraggingOver ? 'bg-primary-50/50 dark:bg-primary-900/10' : ''}`}
-                      >
+                      <div {...provided.droppableProps} ref={provided.innerRef} style={{ minHeight: 200 }}
+                        className={`flex-1 overflow-y-auto p-4 space-y-3 transition-colors rounded-b-none ${snapshot.isDraggingOver ? 'bg-primary-50/50 dark:bg-primary-900/10' : ''}`}>
                         <AnimatePresence>
                           {activities.map((activity, index) => (
                             <Draggable key={activity.id} draggableId={activity.id} index={index}>
                               {(provided, snapshot) => (
-                                <motion.div
-                                  layout
-                                  initial={{ opacity: 0, scale: 0.95 }}
-                                  animate={{ opacity: 1, scale: 1 }}
-                                  exit={{ opacity: 0, scale: 0.95 }}
-                                  ref={provided.innerRef}
-                                  {...provided.draggableProps}
-                                  className={`group relative bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 p-4 rounded-2xl shadow-sm hover:border-primary-300 dark:hover:border-primary-700 transition-all ${snapshot.isDragging ? 'shadow-2xl ring-2 ring-primary-500 ring-opacity-50 scale-105 z-50' : ''
-                                    }`}
-                                >
+                                <motion.div layout initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+                                  ref={provided.innerRef} {...provided.draggableProps}
+                                  className={`group relative bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 p-4 rounded-2xl shadow-sm hover:border-primary-300 dark:hover:border-primary-700 transition-all ${snapshot.isDragging ? 'shadow-2xl ring-2 ring-primary-500/50 scale-105 z-50' : ''}`}>
                                   <div className="flex gap-3">
-                                    <div
-                                      {...provided.dragHandleProps}
-                                      className="mt-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 cursor-grab active:cursor-grabbing"
-                                    >
+                                    <div {...provided.dragHandleProps} className="mt-1 text-gray-400 hover:text-gray-600 cursor-grab active:cursor-grabbing">
                                       <GripVertical className="w-5 h-5" />
                                     </div>
-                                    <div className="flex-1">
+                                    <div className="flex-1 min-w-0">
                                       <div className="flex items-start justify-between gap-2">
-                                        <h4 className="font-semibold text-gray-900 dark:text-white text-sm leading-tight">
-                                          {activity.content}
-                                        </h4>
-                                        <span className={`flex-shrink-0 p-1.5 rounded-lg ${getTypeColor(activity.type)}`}>
-                                          {getTypeIcon(activity.type)}
-                                        </span>
+                                        <h4 className="font-semibold text-gray-900 dark:text-white text-sm leading-tight truncate">{activity.content}</h4>
+                                        <span className={`flex-shrink-0 p-1.5 rounded-lg ${getTypeColor(activity.type)}`}>{getTypeIcon(activity.type)}</span>
                                       </div>
                                       <div className="mt-3 flex items-center justify-between text-xs font-medium text-gray-500 dark:text-gray-400">
-                                        <div className="flex items-center gap-1">
-                                          <Clock className="w-3.5 h-3.5" /> {activity.time}
-                                        </div>
-                                        {activity.cost > 0 && (
-                                          <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                                            <DollarSign className="w-3.5 h-3.5" /> {activity.cost}
-                                          </div>
-                                        )}
+                                        <div className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> {activity.time}</div>
+                                        {activity.cost > 0 && <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><DollarSign className="w-3.5 h-3.5" /> {activity.cost}</div>}
                                       </div>
                                     </div>
                                   </div>
-
-                                  {/* Quick Actions (Hover) */}
                                   <div className="absolute -top-3 -right-3 opacity-0 group-hover:opacity-100 transition-opacity flex shadow-sm rounded-lg overflow-hidden border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800">
-                                    <button
-                                      onClick={() => removeActivity(column.id, activity.id)}
-                                      className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
-                                    >
+                                    <button onClick={() => removeActivity(dayId, activity.id)} className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors">
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </button>
                                   </div>
@@ -255,41 +310,45 @@ const ItineraryBuilder = () => {
                           ))}
                         </AnimatePresence>
                         {provided.placeholder}
-
-                        {activities.length === 0 && (
-                          <div className="h-full flex flex-col items-center justify-center text-center p-6 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl">
-                            <div className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center mb-3">
-                              <MapPin className="w-6 h-6 text-gray-400" />
-                            </div>
-                            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">No activities planned yet.</p>
-                            <p className="text-xs text-gray-400 mt-1">Drag and drop or add new.</p>
+                        {activities.length === 0 && !snapshot.isDraggingOver && (
+                          <div className="flex flex-col items-center justify-center text-center p-6 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl">
+                            <MapPin className="w-6 h-6 text-gray-300 dark:text-gray-600 mb-2" />
+                            <p className="text-xs text-gray-400">Drop activities here or add below</p>
                           </div>
                         )}
                       </div>
                     )}
                   </Droppable>
 
+                  {/* Add Activity Form / Button */}
                   <div className="p-3 bg-gray-50 dark:bg-gray-800/30 border-t border-gray-100 dark:border-gray-800 rounded-b-3xl">
-                    <button className="w-full py-2.5 flex items-center justify-center gap-2 text-sm font-semibold text-gray-600 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-all">
-                      <Plus className="w-4 h-4" /> Add to {day.date}
-                    </button>
+                    {showAddForm === dayId ? (
+                      <div className="space-y-2 p-2">
+                        <input value={newAct.content} onChange={e => setNewAct(p => ({ ...p, content: e.target.value }))}
+                          placeholder="Activity name..." className="input-field py-2 text-sm w-full" autoFocus />
+                        <div className="grid grid-cols-2 gap-2">
+                          <input type="time" value={newAct.time} onChange={e => setNewAct(p => ({ ...p, time: e.target.value }))} className="input-field py-2 text-sm" />
+                          <input type="number" value={newAct.cost} onChange={e => setNewAct(p => ({ ...p, cost: e.target.value }))} placeholder="Cost $" className="input-field py-2 text-sm" min="0" />
+                        </div>
+                        <select value={newAct.type} onChange={e => setNewAct(p => ({ ...p, type: e.target.value }))} className="input-field py-2 text-sm w-full">
+                          {ACTIVITY_TYPES.map(t => <option key={t} value={t} className="capitalize">{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+                        </select>
+                        <div className="flex gap-2 pt-1">
+                          <button onClick={() => setShowAddForm(null)} className="flex-1 btn-secondary py-2 text-xs">Cancel</button>
+                          <button onClick={() => addActivity(dayId)} className="flex-1 btn-primary py-2 text-xs">Add</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button onClick={() => { setShowAddForm(dayId); setNewAct({ content: '', time: '09:00 AM', type: 'activity', cost: 0 }); }}
+                        className="w-full py-2.5 flex items-center justify-center gap-2 text-sm font-semibold text-gray-600 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-all">
+                        <Plus className="w-4 h-4" /> Add to {day.date}
+                      </button>
+                    )}
                   </div>
                 </motion.div>
               );
             })}
           </AnimatePresence>
-
-          {/* Add Day Button */}
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className="h-[600px] rounded-3xl border-2 border-dashed border-gray-200 dark:border-gray-800 flex flex-col items-center justify-center text-gray-500 hover:text-primary-500 hover:border-primary-300 hover:bg-primary-50/50 dark:hover:bg-primary-900/10 transition-all group"
-          >
-            <div className="w-16 h-16 bg-gray-100 dark:bg-gray-800 group-hover:bg-primary-100 dark:group-hover:bg-primary-900/30 rounded-2xl flex items-center justify-center mb-4 transition-colors">
-              <Plus className="w-8 h-8" />
-            </div>
-            <span className="font-bold">Add New Day</span>
-          </motion.button>
         </div>
       </DragDropContext>
     </div>

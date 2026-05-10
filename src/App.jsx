@@ -4,8 +4,9 @@ import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import PageTransition from './components/PageTransition';
 import { AnimatePresence } from 'framer-motion';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { TripProvider } from './context/TripContext';
 
-// Lazy loading pages could be added here, but static imports for starter code
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
@@ -18,9 +19,11 @@ import UserProfile from './pages/UserProfile';
 import CityGuide from './pages/CityGuide';
 import Documents from './pages/Documents';
 import ItinerarySummary from './pages/ItinerarySummary';
+import GlobeExplorer from './pages/GlobeExplorer';
 
-function App() {
-  // Check local storage for theme preference, default to dark mode for a modern look
+function AppInner() {
+  const { isAuthenticated, loading, logout } = useAuth();
+
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('theme');
     return saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -38,41 +41,45 @@ function App() {
 
   const toggleDarkMode = () => setDarkMode(!darkMode);
 
-  // Simple auth state for demo - default to false so user sees login animation
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [showAnimation, setShowAnimation] = useState(false);
 
   const handleLogin = () => {
-    setIsAuthenticated(true);
     setShowAnimation(true);
   };
 
+  // Wait until session is restored from localStorage
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-dark-bg flex items-center justify-center">
+        <div className="w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+
   if (!isAuthenticated) {
     return (
-      <Router>
-        <div className="min-h-screen bg-gray-50 dark:bg-dark-bg transition-colors duration-300 flex items-center justify-center">
-          <div className="absolute top-4 right-4">
-            <button onClick={toggleDarkMode} className="p-2 rounded-full bg-white dark:bg-dark-card shadow-sm">
-              {darkMode ? '☀️' : '🌙'}
-            </button>
-          </div>
-          <Routes>
-            <Route path="/login" element={<Login onLogin={handleLogin} />} />
-            <Route path="/signup" element={<Signup />} />
-            <Route path="*" element={<Navigate to="/login" />} />
-          </Routes>
+      <div className="min-h-screen bg-gray-50 dark:bg-dark-bg transition-colors duration-300 flex items-center justify-center">
+        <div className="absolute top-4 right-4">
+          <button onClick={toggleDarkMode} className="p-2 rounded-full bg-white dark:bg-dark-card shadow-sm">
+            {darkMode ? '☀️' : '🌙'}
+          </button>
         </div>
-      </Router>
+        <Routes>
+          <Route path="/login" element={<Login onLogin={handleLogin} />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="*" element={<Navigate to="/login" />} />
+        </Routes>
+      </div>
     );
   }
 
   return (
-    <Router>
+    <>
       <AnimatePresence>
         {showAnimation && <PageTransition onComplete={() => setShowAnimation(false)} />}
       </AnimatePresence>
       <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-dark-bg transition-colors duration-300">
-        <Sidebar onLogout={() => setIsAuthenticated(false)} />
+        <Sidebar onLogout={logout} />
         <div className="flex-1 flex flex-col relative overflow-hidden">
           <Topbar darkMode={darkMode} toggleDarkMode={toggleDarkMode} />
           <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8">
@@ -86,6 +93,7 @@ function App() {
                 <Route path="/pack/:tripId" element={<PackingList />} />
                 <Route path="/profile" element={<UserProfile />} />
                 <Route path="/explore" element={<CityGuide />} />
+                <Route path="/globe" element={<GlobeExplorer />} />
                 <Route path="/documents/:tripId" element={<Documents />} />
                 <Route path="/summary/:tripId" element={<ItinerarySummary />} />
                 <Route path="*" element={<Navigate to="/" />} />
@@ -94,6 +102,18 @@ function App() {
           </main>
         </div>
       </div>
+    </>
+  );
+}
+
+function App() {
+  return (
+    <Router>
+      <AuthProvider>
+        <TripProvider>
+          <AppInner />
+        </TripProvider>
+      </AuthProvider>
     </Router>
   );
 }
