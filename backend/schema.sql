@@ -1,4 +1,4 @@
--- Run this script in your MySQL Workbench or phpMyAdmin to set up the Traveloop Database
+trips-- Run this script in your MySQL Workbench or phpMyAdmin to set up the Traveloop Database
 
 CREATE DATABASE IF NOT EXISTS traveloop;
 USE traveloop;
